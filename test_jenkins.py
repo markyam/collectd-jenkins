@@ -29,9 +29,9 @@ def mock_api_call(url, api_type, module_config):
     if api_type == 'jenkins' and 'localhost' in parsed_url[-2]:
         return getattr(sample_responses, 'jobs')
     elif api_type == 'jenkins':
-        return getattr(sample_responses, parsed_url[-2])
-    elif 'job' in parsed_url[-3]:
-        return getattr(sample_responses, 'builds')
+        return getattr(sample_responses, "_".join(parsed_url[4:-1]))
+    elif api_type == "job_tree":
+        return getattr(sample_responses, 'job_tree')
     # one of the endpoints that the plugin needs
     return getattr(sample_responses, api_type)
 
@@ -76,6 +76,35 @@ mock_config_enhanced_metrics_off.children = [
     ConfigOption('IncludeMetric', ('vm.daemon.count',)),
     ConfigOption('Testing', ('True',))
 ]
+
+mock_read_and_post_job_metrics = mock.Mock()
+mock_config_job_metrics_off = mock.Mock()
+mock_config_job_metrics_off.children = [
+    ConfigOption('Host', ('localhost',)),
+    ConfigOption('Port', ('22379',)),
+    ConfigOption('MetricsKey', ('6Z95HwGBHOj4uBOlsakGR91dxbFenpfz_g2wdBlUAh0-ocmK-CvdHLSvE1LGRdmg',)),
+    ConfigOption('Interval', ('10',)),
+    ConfigOption('ExcludeJobMetrics', ('True',)),
+    ConfigOption('Testing', ('True',))
+]
+
+
+@mock.patch('jenkins.get_response', mock_api_call)
+@mock.patch('jenkins.read_and_post_job_metrics', mock_read_and_post_job_metrics)
+def test_job_url():
+    module_config = jenkins.read_config(mock_config_enhanced_metrics_off)
+    jenkins.read_metrics(module_config)
+    args = mock_read_and_post_job_metrics.call_args.args
+    assert args[1].startswith(module_config["base_url"])
+
+
+@mock.patch('jenkins.get_response', mock_api_call)
+@mock.patch('jenkins.read_and_post_job_metrics', mock_read_and_post_job_metrics)
+def test_job_metrics_off():
+    mock_read_and_post_job_metrics.reset_mock()
+    module_config = jenkins.read_config(mock_config_job_metrics_off)
+    jenkins.read_metrics(module_config)
+    mock_read_and_post_job_metrics.assert_not_called()
 
 
 @mock.patch('jenkins.get_response', mock_api_call)
@@ -128,6 +157,7 @@ def test_boolean_config():
     assert module_config['metrics_key'] == '6Z95HwGBHOj4uBOlsakGR91dxbFenpfz_g2wdBlUAh0-ocmK-CvdHLSvE1LGRdmg'
     assert module_config['base_url'] == 'http://localhost:2379/'
     assert module_config['enhanced_metrics'] == False
+    assert module_config['exclude_job_metrics'] == False
 
 
 @mock.patch('jenkins.get_response', mock_api_call)

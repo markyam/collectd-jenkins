@@ -12,6 +12,7 @@ from requests import HTTPError, RequestException
 from requests.auth import HTTPBasicAuth
 from six.moves import urllib
 from six.moves.urllib.parse import quote as urllib_quote
+from six.moves.urllib.parse import unquote as urllib_unquote
 
 import collectd
 
@@ -21,6 +22,20 @@ urllib3.disable_warnings(urllib3.exceptions.SubjectAltNameWarning)
 
 PLUGIN_NAME = "jenkins"
 DEFAULT_API_TIMEOUT = 60
+
+
+def build_job_folding_exp(depth):
+    """
+    Builds an expression to get all folding jobs within specified depth
+    """
+    exp = ""
+    for _ in range(depth):
+        exp = "[jobs" + exp + ",name,url]"
+    return exp
+
+
+JOB_FOLDING_MAX_DEPTH = 5
+JOB_FOLDING_EXP = build_job_folding_exp(JOB_FOLDING_MAX_DEPTH)
 
 Metric = collections.namedtuple("Metric", ("name", "type"))
 
@@ -87,6 +102,8 @@ def _api_call(url, type, auth_args, http_timeout):
     """
     parsed_url = urllib.parse.urlparse(url)
     url = "{0}://{1}{2}".format(parsed_url.scheme, parsed_url.netloc, urllib_quote(parsed_url.path))
+    if parsed_url.query:
+        url = url + "?" + parsed_url.query
     resp = None
     try:
         resp = requests.get(url, timeout=http_timeout, **auth_args)
@@ -169,6 +186,7 @@ def read_config(conf):
         "http_timeout": DEFAULT_API_TIMEOUT,
         "jobs_last_timestamp": {},
         "ssl_keys": {"enabled": False, "ssl_cert_validation": True},
+        "exclude_job_metrics": False,
     }
 
     interval = None
@@ -201,6 +219,8 @@ def read_config(conf):
             module_config["include_optional_metrics"].add(val.values[0])
         elif val.key == "ExcludeMetric" and val.values[0] and val.values[0] not in NODE_METRICS:
             module_config["exclude_optional_metrics"].add(val.values[0])
+        elif val.key == "ExcludeJobMetrics" and val.values[0]:
+            module_config["exclude_job_metrics"] = str_to_bool(val.values[0])
         elif val.key == "ssl_enabled" and val.values[0]:
             module_config["ssl_keys"]["enabled"] = str_to_bool(val.values[0])
         elif val.key == "ssl_keyfile" and val.values[0]:
@@ -247,7 +267,7 @@ def read_config(conf):
 
     if module_config["username"] is None and module_config["api_token"] is None:
         module_config["username"] = module_config["api_token"] = ""
-    collectd.info("Using username '%s' and api_token '%s' " % (module_config["username"], module_config["api_token"]))
+    collectd.info("Using username '%s'" % module_config["username"])
 
     module_config["auth_args"] = get_auth_args(module_config)
 
@@ -341,11 +361,10 @@ def prepare_and_dispatch_metric(module_config, name, value, _type, extra_dimensi
     data_point.dispatch()
 
 
-def read_and_post_job_metrics(module_config, url, job_name, last_timestamp):
+def read_and_post_job_metrics(module_config, job_url, job_name, last_timestamp):
     """
     Reads json for a job and dispatches job related metrics
     """
-    job_url = url + "job/" + job_name + "/"
     resp_obj = get_response(job_url, "jenkins", module_config)
     extra_dimensions = {}
     extra_dimensions["Job"] = job_name
@@ -461,6 +480,8 @@ def get_response(url, api_type, module_config):
         extension = "api/json/"
     elif api_type == "computer":
         extension = "computer/api/json/"
+    elif api_type == "job_tree":
+        extension = "api/json/?tree=jobs%s" % JOB_FOLDING_EXP
     else:
         extension = "metrics/%s/%s/" % (key, api_type)
 
@@ -507,18 +528,36 @@ def read_metrics(module_config):
     if resp_obj is not None:
         parse_and_post_healthcheck(module_config, resp_obj)
 
-    resp_obj = get_response(module_config["base_url"], "jenkins", module_config)
+    if module_config["exclude_job_metrics"]:
+        return
+
+    resp_obj = get_response(module_config["base_url"], "job_tree", module_config)
 
     if resp_obj is not None:
-        if "jobs" in resp_obj and resp_obj["jobs"]:
-            jobs_data = resp_obj["jobs"]
-            for job in jobs_data:
-                if job["name"] in module_config["jobs_last_timestamp"]:
-                    last_timestamp = module_config["jobs_last_timestamp"][job["name"]]
-                else:
-                    last_timestamp = int(time.time() * 1000) - (60 * 1000)
-                    module_config["jobs_last_timestamp"][job["name"]] = last_timestamp
-                read_and_post_job_metrics(module_config, module_config["base_url"], job["name"], last_timestamp)
+        jobs = []
+
+        items = resp_obj["jobs"]
+        while len(items) > 0:
+            item = items.pop()
+            if "jobs" in item:
+                items.extend(item["jobs"])
+            elif "url" in item:
+                jobs.append(item)
+
+        for job in jobs:
+            if job["name"] in module_config["jobs_last_timestamp"]:
+                last_timestamp = module_config["jobs_last_timestamp"][job["name"]]
+            else:
+                last_timestamp = int(time.time() * 1000) - (60 * 1000)
+                module_config["jobs_last_timestamp"][job["name"]] = last_timestamp
+            # If the Jenkins instance is configured with Jenkins URL, the Job URL will include the prefix
+            # Latest Jenkins versions quote job urls, unquoting as the _api_call func quotes urls
+            job_path = urllib.parse.urlparse(job["url"]).path
+            if module_config["path"] and job_path.startswith(module_config["path"]):
+                job_url = urllib_unquote(job["url"])
+            else:
+                job_url = module_config["base_url"][:-1] + urllib_unquote(job_path)
+            read_and_post_job_metrics(module_config, job_url, job["name"], last_timestamp)
 
 
 def init():

@@ -1,3 +1,9 @@
+> # :warning: End of Support (EoS) Notice
+> 
+> This plugin is deprecated and no longer maintained.
+
+>ℹ️&nbsp;&nbsp;SignalFx was acquired by Splunk in October 2019. See [Splunk SignalFx](https://www.splunk.com/en_us/investor-relations/acquisitions/signalfx.html) for more information.
+
 # collectd jenkins Plugin
 
 A Jenkins collectd plugin which users can use to send metrics from Jenkins instances to SignalFx.
@@ -35,6 +41,7 @@ Optional configurations keys include:
 * IncludeMetric - Advanced Metrics from the `/metrics/<MetricsKey>/metrics` endpoint can be included individually
 * ExcludeMetric - Advanced Metrics from the `/metrics/<MetricsKey>/metrics` endpoint can be excluded individually
 * Dimension - Add extra dimensions to your metrics
+* ExcludeJobMetrics - Flag to specify whether to exclude calls to `/json/api` for all jobs and builds.
 
 ### SSL/TLS
 
